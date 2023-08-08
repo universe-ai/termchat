@@ -1,0 +1,15 @@
+{
+    "extends": "@tsconfig/node14/tsconfig.json",
+    "compilerOptions": {
+        "experimentalDecorators": true,
+        "preserveConstEnums": true,
+        "outDir": "build",
+        "module": "commonjs",
+        "lib": [
+            "dom"
+        ]
+    },
+    "files": [
+        "./index.ts"
+    ]
+}
