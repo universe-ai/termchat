@@ -1,31 +1,21 @@
 {
-    "#": "This is a pure storage server configuration",
-
-    "keyPair": "!serverKeyfile.json:.keyPair",
-    "storage": {
-        "local": {
-        }
-    },
-    "connections": [
+    "#": "This is a pure passive storage server configuration",
+    "name": "chat-server",
+    "version": "0.1",
+    "peers": [
         {
-            "factory": {
+            "connection": {
                 "maxConnectionsPerIp": 10,
                 "maxConnections": 10,
-                "network": "main",
                 "server": {
                     "socketType": "WebSocket",
                     "host": "0.0.0.0",
                     "port": 1117,
-
                     "#": "Allow any client to connect, this is safe because we are not auto extending licenses.",
                     "allowedClients": null,
-
                     "deniedIPs": [],
                     "allowedIPs": null
                 }
-            },
-            "connectionType": {
-                "serverType": "storage"
             },
             "permissions": {
                 "fetchPermissions": {

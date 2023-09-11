@@ -1,3 +1,5 @@
+import { strict as assert } from "assert";
+
 import Readline from "readline";
 import fs from "fs";
 import os from "os";
@@ -6,18 +8,21 @@ import path from "path";
 import {
     DataInterface,
     SignatureOffloader,
-    SignatureOffloaderInterface,
     ParseUtil,
     FileStreamReader,
     FileStreamWriter,
     BlobEvent,
     CreateHandshakeFactoryFactory,
-    HandshakeFactoryFactoryInterface,
     FileUtil,
     JSONUtil,
     TransformerCache,
     TransformerItem,
-    SimpleChat,
+    Thread,
+    Service,
+    P2PClient,
+    StorageUtil,
+    UniverseConf,
+    WalletConf,
 } from "universeai";
 
 import {
@@ -31,48 +36,47 @@ let console = PocketConsole({module: "TermChat", format: "%c[%L%l]%C "});
  * Terminal version of a chat based on The Universe Protocol.
  */
 export class TermChat {
-    protected chat: SimpleChat;
-    protected handlers: {[name: string]: ( (...args: any) => void)[]} = {};
+    protected channel?: Thread;
 
-    constructor(publicKey: Buffer, signatureOffloader: SignatureOffloaderInterface,
-        handshakeFactoryFactory: HandshakeFactoryFactoryInterface) {
+    constructor(protected service: Service) {
+        service.onStorageConnect( () => {
+            console.aced("Connected to storage");
 
-        this.chat = new SimpleChat(publicKey, signatureOffloader, handshakeFactoryFactory, console);
-    }
+            this.channel = this.service.makeThread("channel");
 
-    public async init(config: any) {
-        if (this.chat) {
-            await this.chat.init(config);
-
-            this.setupUI();
-
-            this.chat.onChatReady( (cache: TransformerCache) => {
-                cache.onAdd(this.handleAddedItem);
-                cache.onInsert(this.handleInsertedItem);
-                cache.onDelete(this.handleDeletedItem);
-                cache.onClose(this.handleClose);
+            this.channel.stream({}, (getResponse, transformerCache) => {
+                transformerCache?.onAdd(this.handleAddedItem);
+                transformerCache?.onInsert(this.handleInsertedItem);
+                transformerCache?.onDelete(this.handleDeletedItem);
+                transformerCache?.onClose(this.handleClose);
             });
+        });
 
-            this.chat.onBlob(this.handleBlob);
+        service.onBlob(this.handleBlob);
 
-            this.chat.onStop(this.handleStop);
-        }
-    }
+        service.onConnectionError( (e: {subEvent: string, e: any}) => {
+            console.debug("Connection error", `${e.e.error}`);
+        });
 
-    public start() {
-        this.chat?.start();
-    }
+        service.onStorageClose( () => {
+            console.error("Disconnected from storage");
+        });
 
-    public stop() {
-        this.chat?.stop();
-    }
+        service.onConnectionConnect( (e: {p2pClient: P2PClient}) => {
+            const pubKey = e.p2pClient.getRemotePublicKey();
+            console.info(`Peer just connected to service, peer's publicKey is ${pubKey.toString("hex")}`);
+        });
 
-    public onStop(cb: () => void) {
-        this.hookEvent("stop", cb);
+        service.onConnectionClose( (e: {p2pClient: P2PClient}) => {
+            const pubKey = e.p2pClient.getRemotePublicKey();
+            console.info(`Peer disconnected, who has publicKey ${pubKey.toString("hex")}`);
+        });
+
+        this.setupUI();
     }
 
     protected async handleCommand(command: string) {
-        if (!this.chat) {
+        if (!this.channel) {
             return;
         }
 
@@ -86,7 +90,7 @@ export class TermChat {
         }
         else if (command === "/history") {
             console.info("Full history follows:");
-            const items = this.chat.getCache()?.getItems() ?? [];
+            const items = this.channel.getTransformer()?.getItems() ?? [];
             items.forEach( (transformerItem, index) => {
                 const dataNode = transformerItem.node as DataInterface;
                 console.log(`${transformerItem.index}: ${dataNode.getData()?.toString()}`);
@@ -118,12 +122,30 @@ export class TermChat {
 
             console.info(`Uploading file ${filepath}`);
 
-            await this.chat.sendAttachment(filename, blobHash, blobLength, streamReader);
+            const [node] = await this.channel.post({blobHash, blobLength, data: Buffer.from(filename)});
+            if (node) {
+                this.channel.postLicense(node);
+
+                const nodeId1 = node.getId1();
+                const storageUtil = new StorageUtil(this.service.getStorageClient()!);
+                storageUtil.streamStoreBlob(nodeId1!, streamReader);
+            }
 
             console.info(`Done uploading file ${filepath}`);
         }
         else {
             console.error(`Unknown command: ${command}`);
+        }
+    }
+
+    protected async sendChat(message: string) {
+        if (!this.channel) {
+            return;
+        }
+
+        const [node] = await this.channel.post({data: Buffer.from(message)});
+        if (node) {
+            this.channel.postLicense(node);
         }
     }
 
@@ -137,17 +159,13 @@ export class TermChat {
                 this.handleCommand(input);
             }
             else {
-                this.chat?.sendChat(input);
+                this.sendChat(input);
             }
         });
 
         // This hook will quit the chat on ctrl-c and ctrl-d.
-        readline.on("close", () => this.stop() );
+        readline.on("close", () => this.service.stop() );
     }
-
-    protected handleStop = () => {
-        this.triggerEvent("stop");
-    };
 
     protected handleAddedItem = (transformerItem: TransformerItem) => {
         const {node, index} = transformerItem;
@@ -196,7 +214,11 @@ export class TermChat {
 
             console.debug("Blob data is ready for node", nodeId1.toString("hex"));
 
-            const [streamReader, node] = this.chat.getAttachment(nodeId1);
+            const storageUtil = new StorageUtil(this.service.getStorageClient()!);
+
+            // TODO:
+            const node = await storageUtil.fetchDataNode(nodeId1, Buffer.alloc(32));
+            const streamReader = storageUtil.getBlobStreamReader(nodeId1);
 
             if (!streamReader || !node) {
                 return;
@@ -231,83 +253,64 @@ export class TermChat {
             }
         }
     };
-
-    protected hookEvent(name: string, callback: ( (...args: any) => void)) {
-        const cbs = this.handlers[name] || [];
-        this.handlers[name] = cbs;
-        cbs.push(callback);
-    }
-
-    protected unhookEvent(name: string, callback: ( (...args: any) => void)) {
-        const cbs = (this.handlers[name] || []).filter( (cb: ( (...args: any) => void)) => callback !== cb );
-        this.handlers[name] = cbs;
-    }
-
-    protected triggerEvent(name: string, ...args: any) {
-        const cbs = this.handlers[name] || [];
-        cbs.forEach( (callback: ( (...args: any) => void)) => {
-            setImmediate( () => callback(...args) );
-        });
-    }
 }
 
-function main(): Promise<number> {
-    return new Promise( async (resolve, reject) => {
-        if (process.argv.length < 3) {
-            console.getConsole().error(`Usage: TermChat.ts file.json`);
-            resolve(1);
-            return;
-        }
+async function main(universeConf: UniverseConf, walletConf: WalletConf) {
+    console.info("Initializing...");
 
-        let configFilepath = process.argv[2];
+    const keyPair = walletConf.keyPairs[0];
+    assert(keyPair);
 
-        if (typeof(configFilepath) !== "string") {
-            console.getConsole().error("Missing argument filepath for config file");
-            resolve(1);
-            return;
-        }
+    const handshakeFactoryFactory = CreateHandshakeFactoryFactory(keyPair);
 
-        let config;
-        try {
-            config = JSONUtil.LoadJSON(configFilepath, ['.']);
-        }
-        catch(e) {
-            console.error((e as Error).message);
-            resolve(1);
-            return;
-        }
+    const signatureOffloader = new SignatureOffloader();
+    await signatureOffloader.init();
 
-        const keyPair = ParseUtil.ParseKeyPair(config.keyPair);
+    const service = new Service(universeConf, signatureOffloader, handshakeFactoryFactory);
+    await service.init(walletConf)
 
-        const handshakeFactoryFactory = CreateHandshakeFactoryFactory(keyPair);
+    const termChat = new TermChat(service);
 
-        const signatureOffloader = new SignatureOffloader();
-
-        await signatureOffloader.init();
-
-        await signatureOffloader.addKeyPair(keyPair);
-
-        const termChat = new TermChat(keyPair.publicKey, signatureOffloader, handshakeFactoryFactory);
-
-        try {
-            await termChat.init(config);
-        }
-        catch(e) {
-            console.error("Could not init TermChat", (e as Error).message);
-            signatureOffloader.close();
-            resolve(1);
-            return;
-        }
-
-        termChat.onStop( () => {
-            signatureOffloader.close();
-            resolve(0);
-        });
-
-        termChat.start();
+    service.onStop( () => {
+        signatureOffloader.close();
     });
+
+    try {
+        await service.start();
+    }
+    catch(e) {
+        signatureOffloader.close();
+        console.error("Could not init Service", e);
+        process.exit(1);
+    }
 }
 
-main().then( (statusCode) => {
-    process.exit(statusCode);
-});
+if (process.argv.length < 4) {
+    console.getConsole().error(`Usage: service.ts universe.json wallet.json`);
+    process.exit(1);
+}
+
+const universeConfigPath = process.argv[2];
+const walletConfigPath = process.argv[3];
+
+if (typeof(universeConfigPath) !== "string" || typeof(walletConfigPath) !== "string") {
+    console.getConsole().error(`Usage: TermChat.ts universe.json wallet.json`);
+    process.exit(1);
+}
+
+let universeConf: UniverseConf;
+let walletConf: WalletConf;
+
+try {
+    universeConf = ParseUtil.ParseUniverseConf(
+        JSONUtil.LoadJSON(universeConfigPath, ['.']));
+
+    walletConf = ParseUtil.ParseWalletConf(
+        JSONUtil.LoadJSON(walletConfigPath, ['.']));
+}
+catch(e) {
+    console.error("Could not parse config files", (e as any as Error).message);
+    process.exit(1);
+}
+
+main(universeConf, walletConf);

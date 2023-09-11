@@ -1,10 +1,14 @@
+import { strict as assert } from "assert";
+
 import {
     Service,
     CreateHandshakeFactoryFactory,
     P2PClient,
     JSONUtil,
-    ParseUtil,
     SignatureOffloader,
+    UniverseConf,
+    WalletConf,
+    ParseUtil,
 } from "universeai";
 
 import {
@@ -13,10 +17,12 @@ import {
 
 const console = PocketConsole({module: "TermChatServer", format: "%t %c[%L%l]%C "});
 
-export async function main(config: any) {
+export async function main(universeConf: UniverseConf, walletConf: WalletConf) {
     console.info("Initializing...");
 
-    const keyPair = ParseUtil.ParseKeyPair(config.keyPair);
+    const keyPair = walletConf.keyPairs[0];
+
+    assert(keyPair);
 
     const handshakeFactoryFactory = CreateHandshakeFactoryFactory(keyPair);
 
@@ -24,17 +30,9 @@ export async function main(config: any) {
 
     await signatureOffloader.init();
 
-    await signatureOffloader.addKeyPair(keyPair);
+    const service = new Service(universeConf, signatureOffloader, handshakeFactoryFactory);
 
-    const service = new Service(keyPair.publicKey, signatureOffloader, handshakeFactoryFactory);
-
-    const [stat, err] = await service.parseConfig(config);
-
-    if (!stat) {
-        signatureOffloader.close();
-        console.error("Could not parse config file", err);
-        process.exit(1);
-    }
+    await service.init(walletConf)
 
     service.onConnectionError( (e: {subEvent: string, e: any}) => {
         console.debug("Connection error", `${e.e.error}`);
@@ -72,25 +70,31 @@ export async function main(config: any) {
     }
 }
 
-if (process.argv.length < 3) {
-    console.getConsole().error(`Usage: TermChatServer.ts server.json`);
+if (process.argv.length < 4) {
+    console.getConsole().error(`Usage: TermChatServer.ts universe.json wallet.json`);
     process.exit(1);
 }
 
-const serviceConfigPath = process.argv[2];
+const universeConfigPath = process.argv[2];
+const walletConfigPath = process.argv[3];
 
-if (typeof(serviceConfigPath) !== "string") {
-    console.getConsole().error(`Usage: TermChatServer.ts server.json`);
+if (typeof(universeConfigPath) !== "string" || typeof(walletConfigPath) !== "string") {
+    console.getConsole().error(`Usage: TermChatServer.ts universe.json wallet.json`);
     process.exit(1);
 }
+let universeConf: UniverseConf;
+let walletConf: WalletConf;
 
-let config;
 try {
-    config = JSONUtil.LoadJSON(serviceConfigPath, ['.']);
+    universeConf = ParseUtil.ParseUniverseConf(
+        JSONUtil.LoadJSON(universeConfigPath, ['.']));
+
+    walletConf = ParseUtil.ParseWalletConf(
+        JSONUtil.LoadJSON(walletConfigPath, ['.']));
 }
 catch(e) {
-    console.error((e as any as Error).message);
+    console.error("Could not parse config files", (e as any as Error).message);
     process.exit(1);
 }
 
-main(config);
+main(universeConf, walletConf);

@@ -1,0 +1,57 @@
+{
+    "name": "chat-client",
+    "version": "0.1",
+    "threads": {
+        "channel": {
+            "query": {
+                "parentId": "0000000000000000000000000000000000000000000000000000000000000000",
+                "match": [
+                    {
+                        "nodeType": "00040001"
+                    }
+                ]
+            },
+            "transform": {
+                "algos": [2]
+            },
+            "post": {
+                "contentType": "app/chat/message",
+                "isLicensed": true
+            },
+            "postLicense": {
+                "targets": ["!client1-keyfile.json:.keyPair.publicKey", "!client2-keyfile.json:.keyPair.publicKey"],
+                "jumpPeerPublicKey": "!server-keyfile.json:.keyPair.publicKey"
+            }
+        }
+    },
+    "peers": [
+        {
+            "connection": {
+                "maxConnectionsPerIp": 1,
+                "maxConnections": 1,
+                "client": {
+                    "socketType": "WebSocket",
+                    "#host": "172.104.14.41",
+                    "host": "127.0.0.1",
+                    "port": 1117,
+                    "serverPublicKey": "!server-keyfile.json:.keyPair.publicKey",
+                    "reconnectDelay": 3
+                }
+            }
+        }
+    ],
+    "sync": [
+        {
+           "peerPublicKeys": ["!server-keyfile.json:.keyPair.publicKey"],
+           "blobSizeMaxLimit": -1,
+           "threads": [
+               {
+                   "name": "channel",
+                   "stream": true,
+                   "direction": "both",
+                   "includeLicenses": true
+               }
+           ]
+        }
+    ]
+}
