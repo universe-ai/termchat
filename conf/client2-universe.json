@@ -16,7 +16,8 @@
             },
             "post": {
                 "contentType": "app/chat/message",
-                "isLicensed": true
+                "isLicensed": true,
+                "parentId": "0000000000000000000000000000000000000000000000000000000000000000"
             },
             "postLicense": {
                 "targets": ["!client2-keyfile.json:.keyPair.publicKey", "!client1-keyfile.json:.keyPair.publicKey"],

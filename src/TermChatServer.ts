@@ -30,9 +30,9 @@ export async function main(universeConf: UniverseConf, walletConf: WalletConf) {
 
     await signatureOffloader.init();
 
-    const service = new Service(universeConf, signatureOffloader, handshakeFactoryFactory);
+    const service = new Service(universeConf, walletConf, signatureOffloader, handshakeFactoryFactory);
 
-    await service.init(walletConf)
+    await service.init()
 
     service.onConnectionError( (e: {subEvent: string, e: any}) => {
         console.debug("Connection error", `${e.e.error}`);

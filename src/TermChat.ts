@@ -23,6 +23,8 @@ import {
     StorageUtil,
     UniverseConf,
     WalletConf,
+    StreamReaderInterface,
+    StreamWriterInterface,
 } from "universeai";
 
 import {
@@ -44,15 +46,13 @@ export class TermChat {
 
             this.channel = this.service.makeThread("channel");
 
-            this.channel.stream({}, (getResponse, transformerCache) => {
-                transformerCache?.onAdd(this.handleAddedItem);
-                transformerCache?.onInsert(this.handleInsertedItem);
-                transformerCache?.onDelete(this.handleDeletedItem);
-                transformerCache?.onClose(this.handleClose);
-            });
-        });
+            const stream = this.channel.stream();
 
-        service.onBlob(this.handleBlob);
+            stream.onAdd(this.handleAddedItem);
+            stream.onInsert(this.handleInsertedItem);
+            stream.onDelete(this.handleDeletedItem);
+            stream.onClose(this.handleClose);
+        });
 
         service.onConnectionError( (e: {subEvent: string, e: any}) => {
             console.debug("Connection error", `${e.e.error}`);
@@ -108,28 +108,7 @@ export class TermChat {
                 return;
             }
 
-            const stat = fs.statSync(filepath);
-
-            const blobLength = BigInt(stat.size);
-
-            const filename = path.basename(filepath);
-
-            const blobHash = await FileUtil.HashFile(filepath);
-
-            console.warn(blobHash.toString("hex"));
-
-            const streamReader = new FileStreamReader(filepath);
-
-            console.info(`Uploading file ${filepath}`);
-
-            const [node] = await this.channel.post({blobHash, blobLength, data: Buffer.from(filename)});
-            if (node) {
-                this.channel.postLicense(node);
-
-                const nodeId1 = node.getId1();
-                const storageUtil = new StorageUtil(this.service.getStorageClient()!);
-                storageUtil.streamStoreBlob(nodeId1!, streamReader);
-            }
+            this.upload(this.channel, filepath);
 
             console.info(`Done uploading file ${filepath}`);
         }
@@ -144,6 +123,7 @@ export class TermChat {
         }
 
         const [node] = await this.channel.post({data: Buffer.from(message)});
+
         if (node) {
             this.channel.postLicense(node);
         }
@@ -168,6 +148,10 @@ export class TermChat {
     }
 
     protected handleAddedItem = (transformerItem: TransformerItem) => {
+        if (!this.channel) {
+            return;
+        }
+
         const {node, index} = transformerItem;
         const dataNode = node as DataInterface;
 
@@ -175,6 +159,10 @@ export class TermChat {
             const id1Str = (dataNode.getId1() as Buffer).toString("hex");
 
             console.log(`${index} (new): <attachment> ${dataNode.getData()?.toString()}`);
+
+            if (node.hasBlob()) {
+                this.download(this.channel, node as DataInterface);
+            }
         }
         else {
             console.log(`${index} (new): ${dataNode.getData()?.toString()}`);
@@ -182,6 +170,10 @@ export class TermChat {
     };
 
     protected handleInsertedItem = (transformerItem: TransformerItem) => {
+        if (!this.channel) {
+            return;
+        }
+
         const {node, index} = transformerItem;
         const dataNode = node as DataInterface;
 
@@ -189,6 +181,10 @@ export class TermChat {
             const id1Str = (dataNode.getId1() as Buffer).toString("hex");
 
             console.log(`${index} (old): <attachment> ${dataNode.getData()?.toString()}`);
+
+            if (node.hasBlob()) {
+                this.download(this.channel, node as DataInterface);
+            }
         }
         else {
             console.log(`${index} (old): ${dataNode.getData()?.toString()}`);
@@ -198,61 +194,75 @@ export class TermChat {
     protected handleDeletedItem = (transformerItem: TransformerItem) => {
         const {node, index} = transformerItem;
 
-        console.info(`Message with index ${index} deleted.`);
+        // TODO: delete attachment?
+
+        console.debug(`Message with index ${index} deleted.`);
     };
 
     protected handleClose = () => {
         console.info("Message history has been purged. Due to storage disconnect.");
     };
 
-    protected handleBlob = async (blobEvent: BlobEvent) => {
-        if (blobEvent.error) {
-            console.debug("Error occured when syncing blob", blobEvent.error);
+    protected async upload(thread: Thread, filePath: string) {
+        if (!this.channel) {
+            return;
+        }
+
+        const stat = fs.statSync(filePath);
+
+        const blobLength = BigInt(stat.size);
+
+        const filename = path.basename(filePath);
+
+        const blobHash = await FileUtil.HashFile(filePath);
+
+        const streamReader = new FileStreamReader(filePath);
+
+        console.info(`Uploading file ${filePath}`);
+
+        const [node] = await this.channel.post({blobHash, blobLength, data: Buffer.from(filename)});
+
+        if (node) {
+            this.channel.postLicense(node);
+
+            this.channel.upload(node.getId1()!, streamReader);
         }
         else {
-            const nodeId1 = blobEvent.nodeId1;
-
-            console.debug("Blob data is ready for node", nodeId1.toString("hex"));
-
-            const storageUtil = new StorageUtil(this.service.getStorageClient()!);
-
-            // TODO:
-            const node = await storageUtil.fetchDataNode(nodeId1, Buffer.alloc(32));
-            const streamReader = storageUtil.getBlobStreamReader(nodeId1);
-
-            if (!streamReader || !node) {
-                return;
-            }
-
-            const basename = path.basename((node.getData() as Buffer).toString());
-
-            const downloadDir = `${os.homedir()}${path.sep}TermChatDownloads`;
-
-            if (!fs.existsSync(downloadDir)) {
-                fs.mkdirSync(downloadDir);
-            }
-
-            const id1Str = nodeId1.toString("hex");
-
-            const filepath = `${downloadDir}${path.sep}${id1Str}-${basename}`;
-
-            console.info(`Downloading file as: ${filepath}`);
-
-            // TODO: allowResume is not yet working so not used as for now.
-            const streamWriter = new FileStreamWriter(filepath, streamReader, false);
-
-            try {
-                await streamWriter.run();
-            }
-            catch(e) {
-                throw e;
-            }
-            finally {
-                streamReader.close();
-                streamWriter.close();
-            }
+            streamReader.close();
         }
-    };
+    }
+
+    protected download(thread: Thread, node: DataInterface):
+        {streamReader: StreamReaderInterface, streamWriter: StreamWriterInterface} {
+
+        const nodeId1 = node.getId1();
+
+        assert(nodeId1);
+
+        const streamReader = thread.download(nodeId1);
+
+        const basename = path.basename((node.getData() as Buffer).toString());
+
+        const downloadDir = `${os.homedir()}${path.sep}TermChatDownloads`;
+
+        if (!fs.existsSync(downloadDir)) {
+            fs.mkdirSync(downloadDir);
+        }
+
+        const id1Str = nodeId1.toString("hex");
+
+        const filePath = `${downloadDir}${path.sep}${id1Str}-${basename}`;
+
+        console.info(`Downloading file as: ${filePath}`);
+
+        // TODO: allowResume is not yet working so not used as for now.
+        const streamWriter = new FileStreamWriter(filePath, streamReader, false);
+
+        // TODO make sure streamers are automatically closed on errors.
+        streamWriter.run();
+
+        return {streamReader, streamWriter};
+    }
 }
 
 async function main(universeConf: UniverseConf, walletConf: WalletConf) {
@@ -266,8 +276,9 @@ async function main(universeConf: UniverseConf, walletConf: WalletConf) {
     const signatureOffloader = new SignatureOffloader();
     await signatureOffloader.init();
 
-    const service = new Service(universeConf, signatureOffloader, handshakeFactoryFactory);
-    await service.init(walletConf)
+    const service = new Service(universeConf, walletConf, signatureOffloader, handshakeFactoryFactory);
+
+    await service.init()
 
     const termChat = new TermChat(service);
 
