@@ -12,16 +12,26 @@
                 ]
             },
             "transform": {
-                "algos": [2]
+                "algos": [2],
+                "head": -1
             },
             "post": {
-                "contentType": "app/chat/message",
-                "isLicensed": true,
-                "parentId": "0000000000000000000000000000000000000000000000000000000000000000"
+                "message": {
+                    "contentType": "app/chat/message",
+                    "isLicensed": true,
+                    "parentId": "0000000000000000000000000000000000000000000000000000000000000000"
+                },
+                "attachment": {
+                    "contentType": "app/chat/attachment",
+                    "isLicensed": true,
+                    "parentId": "0000000000000000000000000000000000000000000000000000000000000000"
+                }
             },
             "postLicense": {
-                "targets": ["!client1-keyfile.json:.keyPair.publicKey", "!client2-keyfile.json:.keyPair.publicKey"],
-                "jumpPeerPublicKey": "!server-keyfile.json:.keyPair.publicKey"
+                "default": {
+                    "targets": ["!client1-keyfile.json:.keyPair.publicKey", "!client2-keyfile.json:.keyPair.publicKey"],
+                    "jumpPeerPublicKey": "!server-keyfile.json:.keyPair.publicKey"
+                }
             }
         }
     },

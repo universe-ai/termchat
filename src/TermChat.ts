@@ -25,6 +25,8 @@ import {
     WalletConf,
     StreamReaderInterface,
     StreamWriterInterface,
+    TRANSFORMER_EVENT,
+    ThreadStreamResponseAPI,
 } from "universeai";
 
 import {
@@ -39,6 +41,7 @@ let console = PocketConsole({module: "TermChat", format: "%c[%L%l]%C "});
  */
 export class TermChat {
     protected channel?: Thread;
+    protected threadStreamResponseAPI?: ThreadStreamResponseAPI;
 
     constructor(protected service: Service) {
         service.onStorageConnect( () => {
@@ -46,15 +49,13 @@ export class TermChat {
 
             this.channel = this.service.makeThread("channel");
 
-            const stream = this.channel.stream();
+            this.threadStreamResponseAPI = this.channel.stream();
 
-            stream.onAdd(this.handleAddedItem);
-            stream.onInsert(this.handleInsertedItem);
-            stream.onDelete(this.handleDeletedItem);
-            stream.onClose(this.handleClose);
+            this.threadStreamResponseAPI.onChange((...args) => this.handleOnChange(...args))
+                .onCancel(() => this.handleClose());
         });
 
-        service.onConnectionError( (e: {subEvent: string, e: any}) => {
+        service.onPeerError( (e: {subEvent: string, e: any}) => {
             console.debug("Connection error", `${e.e.error}`);
         });
 
@@ -62,17 +63,40 @@ export class TermChat {
             console.error("Disconnected from storage");
         });
 
-        service.onConnectionConnect( (e: {p2pClient: P2PClient}) => {
+        service.onPeerConnect( (e: {p2pClient: P2PClient}) => {
             const pubKey = e.p2pClient.getRemotePublicKey();
             console.info(`Peer just connected to service, peer's publicKey is ${pubKey.toString("hex")}`);
         });
 
-        service.onConnectionClose( (e: {p2pClient: P2PClient}) => {
+        service.onPeerClose( (e: {p2pClient: P2PClient}) => {
             const pubKey = e.p2pClient.getRemotePublicKey();
             console.info(`Peer disconnected, who has publicKey ${pubKey.toString("hex")}`);
         });
 
         this.setupUI();
+    }
+
+    protected handleOnChange(event: TRANSFORMER_EVENT) {
+        event.added.forEach( id1 => {
+            const dataNode = this.threadStreamResponseAPI!.getTransformer().getNode(id1);
+
+            if (!dataNode) {
+                return;
+            }
+
+            if (dataNode.getContentType() === "app/chat/attachment") {
+                const id1Str = id1.toString("hex");
+
+                console.log(`<attachment> ${dataNode.getData()?.toString()}`);
+
+                if (dataNode.hasBlob()) {
+                    this.download(dataNode as DataInterface);
+                }
+            }
+            else {
+                console.log(`${dataNode.getData()?.toString()}`);
+            }
+        });
     }
 
     protected async handleCommand(command: string) {
@@ -90,7 +114,7 @@ export class TermChat {
         }
         else if (command === "/history") {
             console.info("Full history follows:");
-            const items = this.channel.getTransformer()?.getItems() ?? [];
+            const items = this.threadStreamResponseAPI!.getTransformer().getItems();
             items.forEach( (transformerItem, index) => {
                 const dataNode = transformerItem.node as DataInterface;
                 console.log(`${transformerItem.index}: ${dataNode.getData()?.toString()}`);
@@ -109,8 +133,6 @@ export class TermChat {
             }
 
             this.upload(this.channel, filepath);
-
-            console.info(`Done uploading file ${filepath}`);
         }
         else {
             console.error(`Unknown command: ${command}`);
@@ -122,10 +144,10 @@ export class TermChat {
             return;
         }
 
-        const [node] = await this.channel.post({data: Buffer.from(message)});
+        const [node] = await this.channel.post("message", {data: Buffer.from(message)});
 
         if (node) {
-            this.channel.postLicense(node);
+            this.channel.postLicense("default", node);
         }
     }
 
@@ -147,58 +169,6 @@ export class TermChat {
         readline.on("close", () => this.service.stop() );
     }
 
-    protected handleAddedItem = (transformerItem: TransformerItem) => {
-        if (!this.channel) {
-            return;
-        }
-
-        const {node, index} = transformerItem;
-        const dataNode = node as DataInterface;
-
-        if (dataNode.getContentType() === "app/chat/attachment") {
-            const id1Str = (dataNode.getId1() as Buffer).toString("hex");
-
-            console.log(`${index} (new): <attachment> ${dataNode.getData()?.toString()}`);
-
-            if (node.hasBlob()) {
-                this.download(this.channel, node as DataInterface);
-            }
-        }
-        else {
-            console.log(`${index} (new): ${dataNode.getData()?.toString()}`);
-        }
-    };
-
-    protected handleInsertedItem = (transformerItem: TransformerItem) => {
-        if (!this.channel) {
-            return;
-        }
-
-        const {node, index} = transformerItem;
-        const dataNode = node as DataInterface;
-
-        if (dataNode.getContentType() === "app/chat/attachment") {
-            const id1Str = (dataNode.getId1() as Buffer).toString("hex");
-
-            console.log(`${index} (old): <attachment> ${dataNode.getData()?.toString()}`);
-
-            if (node.hasBlob()) {
-                this.download(this.channel, node as DataInterface);
-            }
-        }
-        else {
-            console.log(`${index} (old): ${dataNode.getData()?.toString()}`);
-        }
-    };
-
-    protected handleDeletedItem = (transformerItem: TransformerItem) => {
-        const {node, index} = transformerItem;
-
-        // TODO: delete attachment?
-
-        console.debug(`Message with index ${index} deleted.`);
-    };
-
     protected handleClose = () => {
         console.info("Message history has been purged. Due to storage disconnect.");
     };
@@ -216,30 +186,40 @@ export class TermChat {
 
         const blobHash = await FileUtil.HashFile(filePath);
 
-        const streamReader = new FileStreamReader(filePath);
-
         console.info(`Uploading file ${filePath}`);
 
-        const [node] = await this.channel.post({blobHash, blobLength, data: Buffer.from(filename)});
+        const [node] = await this.channel.post("attachment", {
+            blobHash,
+            blobLength,
+            data: Buffer.from(filename),
+            contentType: "app/chat/attachment",
+        });
 
         if (node) {
-            this.channel.postLicense(node);
+            this.channel.postLicense("default", node);
 
-            this.channel.upload(node.getId1()!, streamReader);
-        }
-        else {
-            streamReader.close();
+            const streamReader = new FileStreamReader(filePath);
+
+            const streamWriter = this.channel.getBlobStreamWriter(node.getId1()!, streamReader);
+
+            streamWriter.onStats( stats => {
+                console.log(stats);
+            });
+
+            streamWriter.run().then( writeData => {
+                console.log("upload ready", writeData);
+            });
         }
     }
 
-    protected download(thread: Thread, node: DataInterface):
+    protected download(node: DataInterface):
         {streamReader: StreamReaderInterface, streamWriter: StreamWriterInterface} {
 
         const nodeId1 = node.getId1();
 
         assert(nodeId1);
 
-        const streamReader = thread.download(nodeId1);
+        const streamReader = this.channel!.getBlobStreamReader(nodeId1);
 
         const basename = path.basename((node.getData() as Buffer).toString());
 
@@ -255,11 +235,15 @@ export class TermChat {
 
         console.info(`Downloading file as: ${filePath}`);
 
-        // TODO: allowResume is not yet working so not used as for now.
-        const streamWriter = new FileStreamWriter(filePath, streamReader, false);
+        const streamWriter = new FileStreamWriter(filePath, streamReader);
 
-        // TODO make sure streamers are automatically closed on errors.
-        streamWriter.run();
+        streamWriter.onStats( stats => {
+            console.log("download", stats);
+        });
+
+        streamWriter.run().then( writeData => {
+            console.log("download done", writeData);
+        });
 
         return {streamReader, streamWriter};
     }

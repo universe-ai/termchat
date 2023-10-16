@@ -34,8 +34,8 @@ export async function main(universeConf: UniverseConf, walletConf: WalletConf) {
 
     await service.init()
 
-    service.onConnectionError( (e: {subEvent: string, e: any}) => {
-        console.debug("Connection error", `${e.e.error}`);
+    service.onPeerError( (e: {subEvent: string, e: any}) => {
+        console.debug("Peer error", `${e.e.error}`);
     });
 
     service.onStorageConnect( () => {
@@ -46,12 +46,12 @@ export async function main(universeConf: UniverseConf, walletConf: WalletConf) {
         console.error("Disconnected from storage");
     });
 
-    service.onConnectionConnect( (e: {p2pClient: P2PClient}) => {
+    service.onPeerConnect( (e: {p2pClient: P2PClient}) => {
         const pubKey = e.p2pClient.getRemotePublicKey();
         console.info(`Peer just connected to service, peer's publicKey is ${pubKey.toString("hex")}`);
     });
 
-    service.onConnectionClose( (e: {p2pClient: P2PClient}) => {
+    service.onPeerClose( (e: {p2pClient: P2PClient}) => {
         const pubKey = e.p2pClient.getRemotePublicKey();
         console.info(`Peer disconnected, who has publicKey ${pubKey.toString("hex")}`);
     });

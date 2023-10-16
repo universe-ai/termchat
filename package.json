@@ -23,6 +23,7 @@
         "node": ">=16"
     },
     "scripts": {
+        "tsc": "./node_modules/.bin/tsc",
         "build": "./node_modules/.bin/tsc"
     },
     "devDependencies": {
@@ -32,7 +33,7 @@
         "typescript": "^4.4.3"
     },
     "dependencies": {
-        "universeai": "0.6.6",
+        "universeai": "0.7.0",
         "pocket-console": "0.5.0"
     }
 }
